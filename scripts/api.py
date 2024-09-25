@@ -14,6 +14,10 @@ from torchvision.transforms.functional import to_pil_image, to_tensor
 from fastapi import FastAPI
 from pydantic import BaseModel
 from modules.api import api
+import threading
+import time
+from helper.logging import Logger
+logger = Logger("API")
 
 class CvtTryon:
     def load_pipeline(self, sd15_inpaint_path, cvt_path, mixed_precision):
@@ -98,28 +102,15 @@ def cvt_load_pipeline(_):
     global pipe, mask_generator
     if pipe is None:
         print("Loading CvtPipeline")
-        pipe = cvt_tryon.load_pipeline("annh/stable-diffusion-v1-5-inpainting", "zhengchong/CatVTON", "fp16")
+        pipe = cvt_tryon.load_pipeline("annh/stable-diffusion-v1-5-inpainting", "annh/cvt", "fp16")
         print("CvtPipeline Loaded")
     if mask_generator is None:
         print("Loading AutoMask Generator")
-        mask_generator = cvt_tryon.load_mask_generator("zhengchong/CatVTON")
+        mask_generator = cvt_tryon.load_mask_generator("annh/cvt")
         print("AutoMask Generator Loaded")
 
 def cvt_api(_: gr.Blocks, app: FastAPI):
-    @app.post("/sdapi/v2/cvt/getmask")
-    async def cvtGetMask(
-        data: CvtMaskRequest
-    ):
-        image = api.decode_base64_to_image(data.image)
-        mask, masked_image = cvt_tryon.auto_mask_generate(mask_generator, image, data.mask_type)
-        return [
-            api.encode_pil_to_base64(mask),
-            api.encode_pil_to_base64(masked_image),
-        ]
-
-        
-    @app.post("/sdapi/v2/cvt/try-outfit")
-    async def cvtTryOutfit(
+    def cvtTryOutfit(
         data: CvtTryOutfitRequest
     ):
         cloth_image = api.decode_base64_to_image(data.cloth_image)
@@ -137,6 +128,36 @@ def cvt_api(_: gr.Blocks, app: FastAPI):
             api.encode_pil_to_base64(result_image),
             api.encode_pil_to_base64(mask_image),
         ]
+        
+    @app.post("/sdapi/v2/cvt/getmask")
+    def cvtGetMask(
+        data: CvtMaskRequest
+    ):
+        image = api.decode_base64_to_image(data.image)
+        mask, masked_image = cvt_tryon.auto_mask_generate(mask_generator, image, data.mask_type)
+        return [
+            api.encode_pil_to_base64(mask),
+            api.encode_pil_to_base64(masked_image),
+        ]
+
+        
+    @app.post("/sdapi/v2/cvt/try-outfit")
+    def cvtTryOutfitAPI(
+        data: CvtTryOutfitRequest
+    ):
+        return cvtTryOutfit(data)
+        
+    @app.post("/sdapi/v2/cvt/try-outfit2")
+    def cvtTryOutfitAPI2(
+        data: CvtTryOutfitRequest
+    ):
+        logger.info(f"===== API /sdapi/v2/cvt/try-outfit2 start =====")
+        t = time.time()
+        thread = threading.Thread(target=cvtTryOutfit, args=(data,))
+        thread.start()
+        return {
+            "success" : True,
+        }
 
 try:
     import modules.script_callbacks as script_callbacks
