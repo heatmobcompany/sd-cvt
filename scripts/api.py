@@ -1,4 +1,7 @@
 import os
+import random
+import string
+from cvt_utils import progress
 import torch
 from cvt_model.cloth_masker import AutoMasker as AM
 from cvt_model.cloth_masker import vis_mask
@@ -47,7 +50,15 @@ class CvtTryon:
 
 
     def tryon_generate(
-        self, pipe: CvtPipeline, target_image, refer_image, mask_image, seed, steps, cfg
+        self, 
+        pipe: CvtPipeline, 
+        target_image, 
+        refer_image, 
+        mask_image,
+        seed = 42,
+        steps = 50,
+        cfg = 2.5,
+        task_id=None,
     ):
         width, height = target_image.size
         generator = torch.Generator(device='cuda').manual_seed(seed)
@@ -67,6 +78,7 @@ class CvtTryon:
             generator=generator,
             width=width,
             height=height,
+            task_id=task_id,
         )[0]
         
         return result_image
@@ -93,6 +105,7 @@ class CvtTryOutfitRequest(BaseModel):
     mask_image: Optional[str] = ""
     model_image: str
     mask_type: Optional[str] = "overall"
+    params: Optional[dict] = {}
 
 cvt_tryon = CvtTryon()
 pipe = None
@@ -111,23 +124,39 @@ def cvt_load_pipeline(_):
 
 def cvt_api(_: gr.Blocks, app: FastAPI):
     def cvtTryOutfit(
-        data: CvtTryOutfitRequest
+        data: CvtTryOutfitRequest,
+        task_id=None
     ):
-        cloth_image = api.decode_base64_to_image(data.cloth_image)
-        model_image = api.decode_base64_to_image(data.model_image)
-        if data.mask_image:
-            mask_image = api.decode_base64_to_image(data.mask_image)
-        else:
-            if not data.mask_type:
-                return {
-                    "error": "mask_type is required if mask_image is not provided"
-                }
-            (mask_image, _) = cvt_tryon.auto_mask_generate(mask_generator, model_image, data.mask_type)
-        result_image = cvt_tryon.tryon_generate(pipe, model_image, cloth_image, mask_image, 42, 50, 2.5)
-        return [
-            api.encode_pil_to_base64(result_image),
-            api.encode_pil_to_base64(mask_image),
-        ]
+        try:
+            progress.add_task(task_id)
+            model_image = api.decode_base64_to_image(data.model_image)
+            cloth_image = api.decode_base64_to_image(data.cloth_image)
+            width, height = model_image.size
+            new_width = width // 8 * 8
+            new_height = height // 8 * 8
+            model_image = model_image.resize((new_width, new_height))
+            cloth_image = cloth_image.resize((new_width, new_height))
+
+            if data.mask_image:
+                mask_image = api.decode_base64_to_image(data.mask_image)
+            else:
+                if not data.mask_type:
+                    return {
+                        "error": "mask_type is required if mask_image is not provided"
+                    }
+                (mask_image, _) = cvt_tryon.auto_mask_generate(mask_generator, model_image, data.mask_type)
+            progress.update_task(task_id, progress.CvtStatus.Active)
+            result_image = cvt_tryon.tryon_generate(pipe, model_image, cloth_image, mask_image, task_id=task_id, **data.params)
+            result = [
+                api.encode_pil_to_base64(result_image),
+                api.encode_pil_to_base64(mask_image),
+            ]
+            progress.update_task(task_id, progress.CvtStatus.Completed, 1.0, result=result)
+            return result
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            progress.update_task(task_id, progress.CvtStatus.Failed, result=str(e))
+            raise e
         
     @app.post("/sdapi/v2/cvt/getmask")
     def cvtGetMask(
@@ -141,23 +170,31 @@ def cvt_api(_: gr.Blocks, app: FastAPI):
         ]
 
         
-    @app.post("/sdapi/v2/cvt/try-outfit")
+    @app.post("/sdapi/v2/cvt/try-outfit-sync")
     def cvtTryOutfitAPI(
         data: CvtTryOutfitRequest
     ):
         return cvtTryOutfit(data)
         
-    @app.post("/sdapi/v2/cvt/try-outfit2")
+    @app.post("/sdapi/v2/cvt/try-outfit")
     def cvtTryOutfitAPI2(
         data: CvtTryOutfitRequest
     ):
-        logger.info(f"===== API /sdapi/v2/cvt/try-outfit2 start =====")
-        t = time.time()
-        thread = threading.Thread(target=cvtTryOutfit, args=(data,))
+        logger.info(f"===== API /sdapi/v2/cvt/try-outfit =====")
+        task_id = ''.join(random.choice(string.ascii_letters) for i in range(10))
+        thread = threading.Thread(target=cvtTryOutfit, args=(data,task_id))
         thread.start()
         return {
-            "success" : True,
+            "status" : "success",
+            "task_id" : task_id,
         }
+    
+    @app.get("/sdapi/v2/cvt/task/{task_id}")
+    def cvtGetTask(
+        task_id: str
+    ):
+        task = progress.get_task(task_id)
+        return task
 
 try:
     import modules.script_callbacks as script_callbacks

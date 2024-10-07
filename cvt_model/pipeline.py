@@ -21,6 +21,7 @@ from cvt_utils.utils import (
     resize_and_crop,
     resize_and_padding,
 )
+from cvt_utils import progress
 
 
 class CvtPipeline:
@@ -99,7 +100,7 @@ class CvtPipeline:
 
     @torch.no_grad()
     def __call__(
-        self, 
+        self,
         image: Union[PIL.Image.Image, torch.Tensor],
         condition_image: Union[PIL.Image.Image, torch.Tensor],
         mask: Union[PIL.Image.Image, torch.Tensor],
@@ -109,6 +110,7 @@ class CvtPipeline:
         width: int = 768,
         generator=None,
         eta=1.0,
+        task_id=None,
         **kwargs
     ):
         concat_dim = -2  # FIXME: y axis concat
@@ -153,6 +155,7 @@ class CvtPipeline:
         num_warmup_steps = (len(timesteps) - num_inference_steps * self.noise_scheduler.order)
         with tqdm.tqdm(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                progress.update_task(task_id, None, i/num_inference_steps)
                 # expand the latents if we are doing classifier free guidance
                 non_inpainting_latent_model_input = (torch.cat([latents] * 2) if do_classifier_free_guidance else latents)
                 non_inpainting_latent_model_input = self.noise_scheduler.scale_model_input(non_inpainting_latent_model_input, t)
