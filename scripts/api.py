@@ -12,7 +12,7 @@ from huggingface_hub import snapshot_download
 import gradio as gr
 import numpy as np
 from typing import Optional
-
+from PIL import ImageFilter, ImageOps
 from torchvision.transforms.functional import to_pil_image, to_tensor
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -147,6 +147,12 @@ def cvt_api(_: gr.Blocks, app: FastAPI):
                 (mask_image, _) = cvt_tryon.auto_mask_generate(mask_generator, model_image, data.mask_type)
             progress.update_task(task_id, progress.CvtStatus.Active)
             result_image = cvt_tryon.tryon_generate(pipe, model_image, cloth_image, mask_image, task_id=task_id, **data.params)
+            
+            # paste cloth image to result image with mask inverted
+            inverted_mask = ImageOps.invert(mask_image)
+            blurred_mask = inverted_mask.filter(ImageFilter.GaussianBlur(4))
+            result_image.paste(model_image, (0, 0), mask=blurred_mask)
+            
             result = [
                 api.encode_pil_to_base64(result_image),
                 api.encode_pil_to_base64(mask_image),
